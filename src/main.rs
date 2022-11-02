@@ -1,13 +1,38 @@
+use std::fs;
+
 #[allow(dead_code)]
 fn main() {
-    println!("Hello, world!");
+    println!("Test load_code");
+    let code = load_code("./examples/hello0.b98");
+    println!("{}", &code);
+    println!("");
+
+    println!("Test new VM");
+    let mut fvm = funge::Vm::new(code);
+    println!("{:?}", fvm);
+    println!("");
+
+    println!("Test run_for");
+    let ran_for = match fvm.run_for(funge::Vm::FOREVER) {
+        Ok(x) => x,
+        Err(_) => 0,
+    };
+    println!();
+    println!("Ran for {}", ran_for);
+    println!("VM stack:\n{:?}", fvm.get_stack());
+}
+
+fn load_code(path: &str) -> String {
+    fs::read_to_string(path).expect("Error loading code")
 }
 
 pub mod funge {
     use rand::{rngs::ThreadRng, Rng};
+    use std::io::{self, Read};
     pub mod code {
         use super::Direction;
 
+        #[derive(Debug)]
         pub enum Instruction {
             // default
             ReadAndPush(usize), // read the value onto the stack
@@ -52,15 +77,15 @@ pub mod funge {
         }
 
         impl Instruction {
-            pub fn from_raw(raw: u8, string_mode: &bool) -> Self {
+            pub fn from_raw(raw: usize, string_mode: &bool) -> Self {
                 if *string_mode {
-                    return match raw as char {
+                    return match (raw as u8) as char {
                         '"' => Self::StringMode,
                         x => Self::ReadAndPush(x as usize),
                     };
                 }
 
-                match raw as char {
+                match (raw as u8) as char {
                     ' ' => Self::NoOp,
                     '@' => Self::Stop,
                     '#' => Self::Skip,
@@ -89,7 +114,7 @@ pub mod funge {
                     'p' => Self::Put,
                     'g' => Self::Get,
                     x if x as u8 >= '0' as u8 && x as u8 <= '9' as u8 => {
-                        Self::ReadAndPush(x as usize)
+                        Self::ReadAndPush(x as usize - '0' as usize)
                     }
                     _ => Self::ReadAndPush(raw as usize),
                 }
@@ -168,7 +193,7 @@ pub mod funge {
     }
 
     #[derive(Debug)]
-    struct Stack<T: num_traits::PrimInt>(Vec<T>);
+    pub struct Stack<T: num_traits::PrimInt>(Vec<T>);
 
     impl<T: num_traits::PrimInt> Stack<T> {
         fn new() -> Stack<T> {
@@ -209,8 +234,9 @@ pub mod funge {
     }
 
     impl<T: num_traits::PrimInt> Lifo<T> for Stack<T> {
-        fn push(&mut self, item: T) {
+        fn push(&mut self, item: T) -> () {
             self.0.push(item);
+            ()
         }
 
         fn pop(&mut self) -> T {
@@ -236,12 +262,16 @@ pub mod funge {
 
     // Space trait implementations
     impl<T: num_traits::PrimInt> Space<T> {
+        fn dims(&self) -> (usize, usize) {
+            return (self.points[0].len(), self.points.len());
+        }
+
         fn get(&self, at: &Location) -> T {
-            self.points[at.0 as usize][at.1 as usize]
+            self.points[at.1 as usize][at.0 as usize]
         }
 
         fn set(&mut self, value: T, at: Location) -> () {
-            self.points[at.0 as usize][at.1 as usize] = value;
+            self.points[at.1 as usize][at.0 as usize] = value;
             ()
         }
 
@@ -291,9 +321,9 @@ pub mod funge {
         fn go(&mut self, direction: &Direction) {
             let delta: Location = match direction {
                 Direction::North => Location(0, -1),
-                Direction::East => Location(-1, 0),
+                Direction::East => Location(1, 0),
                 Direction::South => Location(0, 1),
-                Direction::West => Location(1, 0),
+                Direction::West => Location(-1, 0),
             };
 
             self.0 += delta.0;
@@ -301,10 +331,17 @@ pub mod funge {
         }
     }
 
+    impl Location {
+        fn constrain(&mut self, w: usize, h: usize) {
+            self.0 = self.0 % w as i64;
+            self.1 = self.1 % h as i64;
+        }
+    }
+
     #[derive(Debug)]
-    struct Vm {
-        space: Space<u8>,
-        stack: Stack<u8>,
+    pub struct Vm {
+        space: Space<usize>,
+        stack: Stack<usize>,
         location: Location,
         delta: Direction,
         string_mode: bool,
@@ -313,6 +350,8 @@ pub mod funge {
     }
 
     impl Vm {
+        pub const FOREVER: usize = 0;
+
         pub fn new(code: String) -> Vm {
             Vm {
                 space: Space::new(code),
@@ -322,6 +361,42 @@ pub mod funge {
                 string_mode: false,
                 stopped: false,
                 rng: rand::thread_rng(),
+            }
+        }
+
+        pub fn get_stack(&self) -> Stack<usize> {
+            Stack(self.stack.0.to_vec())
+        }
+
+        pub fn next_location(&mut self) -> () {
+            self.location.go(&self.delta);
+            let (w, h) = self.space.dims();
+            self.location.constrain(w, h);
+            ()
+        }
+
+        pub fn tick(&mut self) -> bool {
+            let instruction =
+                code::Instruction::from_raw(self.space.get(&self.location), &self.string_mode);
+
+            self.consume(instruction);
+
+            if !self.stopped {
+                self.next_location();
+            }
+
+            return self.stopped;
+        }
+
+        pub fn run_for(&mut self, tick_limit: usize) -> Result<usize, ()> {
+            let mut ticks: usize = 0;
+            while !self.tick() && (ticks <= tick_limit || tick_limit == Vm::FOREVER) {
+                ticks += 1;
+            }
+
+            match ticks {
+                0 => Result::Err(()),
+                x => Result::Ok(x),
             }
         }
 
@@ -371,20 +446,20 @@ pub mod funge {
                 code::Instruction::Pop => match self.stack.pop() {
                     _ => (),
                 },
-                code::Instruction::Add => self.stack.apply(ops::NAry::<u8, 2>::add()),
-                code::Instruction::Sub => self.stack.apply(ops::NAry::<u8, 2>::sub()),
-                code::Instruction::Mul => self.stack.apply(ops::NAry::<u8, 2>::mul()),
-                code::Instruction::Div => self.stack.apply(ops::NAry::<u8, 2>::div()),
-                code::Instruction::Mod => self.stack.apply(ops::NAry::<u8, 2>::rem()),
-                code::Instruction::GreaterThan => self.stack.apply(ops::NAry::<u8, 2>::gt()),
-                code::Instruction::Not => self.stack.apply(ops::NAry::<u8, 1>::not()),
+                code::Instruction::Add => self.stack.apply(ops::NAry::<usize, 2>::add()),
+                code::Instruction::Sub => self.stack.apply(ops::NAry::<usize, 2>::sub()),
+                code::Instruction::Mul => self.stack.apply(ops::NAry::<usize, 2>::mul()),
+                code::Instruction::Div => self.stack.apply(ops::NAry::<usize, 2>::div()),
+                code::Instruction::Mod => self.stack.apply(ops::NAry::<usize, 2>::rem()),
+                code::Instruction::GreaterThan => self.stack.apply(ops::NAry::<usize, 2>::gt()),
+                code::Instruction::Not => self.stack.apply(ops::NAry::<usize, 1>::not()),
                 code::Instruction::PrintInt => {
                     print!("{}", self.stack.pop() as usize);
                     ()
                 }
                 code::Instruction::PrintChr => {
                     let mut output = String::from("");
-                    output.push(self.stack.pop() as char);
+                    output.push(self.stack.pop() as u8 as char);
                     print!("{}", output);
                     ()
                 }
@@ -397,11 +472,23 @@ pub mod funge {
                     self.stack
                         .push(self.space.get(&Location(x as i64, y as i64)))
                 }
-                _ => {
-                    let val = self.space.get(&self.location);
-                    self.stack.push(val);
-                    ()
+                code::Instruction::ReadInt => {
+                    let mut input = io::stdin();
+
+                    let mut buf = String::new();
+                    input.read_to_string(&mut buf).expect("saw it coming");
+
+                    // use the ordinal trick
+                    let mut int = buf.pop().unwrap() as isize - '0' as isize;
+                    int = match int {
+                        x if x > 9 => 9,
+                        x if x < 0 => 0,
+                        x => x,
+                    };
+                    self.stack.push(int as usize)
                 }
+                code::Instruction::ReadChr => (),
+                code::Instruction::ReadAndPush(x) => self.stack.push(x),
             }
         }
     }
