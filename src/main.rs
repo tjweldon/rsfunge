@@ -102,10 +102,6 @@ mod visual {
 
 
     #[allow(dead_code)]
-    impl funge::Stack<usize> {
-        pub fn draw_at(&self, draw: &Draw) {}
-    }
-
 
     struct Model {
         _window: window::Id,
