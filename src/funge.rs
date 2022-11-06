@@ -307,7 +307,7 @@ impl Movable for Location {
 impl Location {
     fn constrain(&mut self, w: usize, h: usize) {
         self.0 = (self.0 + w as i64) % w as i64;
-        self.1 = (self.1 + h as i64)% h as i64;
+        self.1 = (self.1 + h as i64) % h as i64;
     }
 }
 
