@@ -2,32 +2,50 @@ mod funge;
 
 use clap::Parser;
 use std::fs;
+use std::sync::mpsc::Sender;
 
 #[derive(Debug, Parser)]
 pub struct Cli {
-    #[arg(short = 't', value_name = "CODE_PATH", default_value = "./test.b98")]
+    #[arg(
+        short = 't',
+        long = "target",
+        value_name = "CODE_PATH",
+        default_value = "./test.b98"
+    )]
     pub target: String,
 
-    #[arg(short = 's', value_name = "MAX_TICKS", default_value = "100")]
+    #[arg(
+        short = 's',
+        long = "stop-after",
+        value_name = "MAX_TICKS",
+        default_value = "100"
+    )]
     pub stop_after: usize,
 
-    #[arg(short = 'v', default_value_t = false)]
+    #[arg(short = 'v', long = "visual", default_value_t = false)]
     pub visual: bool,
+
+    #[arg(short = 'a', default_value_t = false)]
+    pub asynchronous: bool,
 }
 
 #[allow(dead_code)]
 fn main() {
     let cli = Cli::parse();
-    //println!("{:?}", cli);
-    //if cli.stop_after == funge::Vm::FOREVER {
-    //    return;
-    //}
+    println!("{:?}", cli);
 
     if !cli.visual {
         run_vm(&cli);
     } else {
         visual::run();
     }
+}
+
+fn build_worker(sender: Sender<funge::VmState>) -> Box<dyn Fn(funge::VmState) -> ()> {
+    Box::new(move |vm_state: funge::VmState| -> () {
+        sender.send(vm_state).expect("send error");
+        ()
+    })
 }
 
 fn run_vm(cli: &Cli) {
@@ -47,11 +65,11 @@ fn load_code(path: &str) -> String {
 }
 
 mod visual {
-    use crate::load_code;
+    use crate::{build_worker, load_code};
     use core::ops::Add;
     use nannou::geom::Vec2;
     use nannou::prelude::*;
-    use std::{thread, time};
+    use std::{sync::mpsc::channel, sync::mpsc::Receiver, thread, time};
 
     use super::funge;
     const C_WIDTH: f32 = 100.0;
@@ -67,7 +85,7 @@ mod visual {
     }
 
     impl Rect {
-        fn new(vm: &funge::Vm) -> Self {
+        fn new(vm: &funge::VmState) -> Self {
             let (w, h) = canvas_size(vm);
             let (top, btm, right, left) = (
                 pt2(0.0, h as f32 / 2.0),
@@ -91,10 +109,11 @@ mod visual {
 
     struct Model {
         _window: window::Id,
-        vm: funge::Vm,
+        receiver: Receiver<funge::VmState>,
+        vm: funge::VmState,
     }
 
-    fn canvas_size(vm: &funge::Vm) -> (u32, u32) {
+    fn canvas_size(vm: &funge::VmState) -> (u32, u32) {
         let (cols, rows) = vm.space.dims();
         (
             (cols as f32 * C_WIDTH) as u32,
@@ -134,7 +153,7 @@ mod visual {
         }
 
         // draw the current instruction pointer location
-        let ip_location = _model.vm.get_location();
+        let ip_location = _model.vm.location.clone();
 
         // for converting from funge::Location in funge::Space to nannou::geom::Vec2 in canvas
         // space
@@ -187,23 +206,35 @@ mod visual {
 
     pub fn run() {
         let model2 = |app: &App| -> Model {
-            let vm = funge::Vm::new(load_code("./test.b98"));
-            let c_rect = Rect::new(&vm);
+            let mut vm = funge::Vm::new(load_code("./test.b98"));
+            let vm_state = vm.get_state();
+            let (sender, receiver) = channel::<funge::VmState>();
 
+            // use build_worker to provide a closure that will be invoked on each tick.
+            let tock = build_worker(sender);
+            vm.set_tick_callback(tock);
+
+            // spawn the thread responsible for printing out that message
+            let c_rect = Rect::new(&vm_state);
             let _window = app
                 .new_window()
                 .size(c_rect.w, c_rect.h)
                 .view(view)
                 .build()
                 .unwrap();
-            Model { _window, vm }
+
+            Model {
+                _window,
+                vm: vm_state,
+                receiver,
+            }
         };
 
         let update = |_app: &App, _model: &mut Model, _update: Update| {
-            _ = _model.vm.run_for(1);
+            _model.vm = _model.receiver.recv().unwrap();
             thread::sleep(time::Duration::from_millis(100));
         };
 
-        nannou::app(model2).update(update).run();
+        nannou::app(model2).update(update);
     }
 }

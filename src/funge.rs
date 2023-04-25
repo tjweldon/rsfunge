@@ -218,6 +218,12 @@ impl<T: num_traits::PrimInt> Lifo<T> for Stack<T> {
     }
 }
 
+impl<T: num_traits::PrimInt> Clone for Stack<T> {
+    fn clone(&self) -> Self {
+        Stack::<T>(Vec::<T>::from_iter((0..self.0.len()).map(|i| self.0[i])))
+    }
+}
+
 #[derive(Debug)]
 pub enum Direction {
     North,
@@ -226,9 +232,35 @@ pub enum Direction {
     West,
 }
 
+impl Clone for Direction {
+    fn clone(&self) -> Self {
+        match self {
+            &Direction::North => Direction::North,
+            &Direction::South => Direction::South,
+            &Direction::East => Direction::East,
+            &Direction::West => Direction::West,
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct Space<T: num_traits::PrimInt> {
     points: Vec<Vec<T>>,
+}
+
+impl<T: num_traits::PrimInt> Clone for Space<T> {
+    fn clone(&self) -> Self {
+        let (w, h) = self.dims();
+        let mut code = String::new();
+        for y_idx in 0..h {
+            for x_idx in 0..w {
+                let code_point = self.points[y_idx][x_idx].to_u8().unwrap() as char;
+                code.push(code_point);
+            }
+        }
+
+        Space::<T>::new(code)
+    }
 }
 
 // Space trait implementations
@@ -304,6 +336,12 @@ impl Movable for Location {
     }
 }
 
+impl Clone for Location {
+    fn clone(&self) -> Self {
+        Location(self.0, self.1)
+    }
+}
+
 impl Location {
     fn constrain(&mut self, w: usize, h: usize) {
         self.0 = (self.0 + w as i64) % w as i64;
@@ -311,7 +349,6 @@ impl Location {
     }
 }
 
-#[derive(Debug)]
 pub struct Vm {
     pub space: Space<usize>,
     pub stack: Stack<usize>,
@@ -320,6 +357,7 @@ pub struct Vm {
     string_mode: bool,
     stopped: bool,
     rng: ThreadRng,
+    on_tick: Box<dyn Fn(VmState) -> ()>,
 }
 
 #[allow(dead_code)]
@@ -335,11 +373,23 @@ impl Vm {
             string_mode: false,
             stopped: false,
             rng: rand::thread_rng(),
+            on_tick: Box::new(|_: VmState| {
+                println!("tick");
+                ()
+            }),
         }
+    }
+
+    pub fn set_tick_callback(&mut self, callback: Box<dyn Fn(VmState) -> ()>) {
+        self.on_tick = callback;
     }
 
     pub fn get_stack(&self) -> Stack<usize> {
         Stack(self.stack.0.to_vec())
+    }
+
+    pub fn get_space(&self) -> Space<usize> {
+        self.space.clone()
     }
 
     pub fn next_location(&mut self) -> () {
@@ -369,6 +419,8 @@ impl Vm {
     pub fn run_for(&mut self, tick_limit: usize) -> Result<usize, ()> {
         let mut ticks: usize = 0;
         while !self.tick() {
+            let tick_fn = self.on_tick.as_ref();
+            tick_fn(self.get_state());
             ticks += 1;
             if !(ticks < tick_limit || tick_limit == Vm::FOREVER) {
                 break;
@@ -470,6 +522,24 @@ impl Vm {
             }
             code::Instruction::ReadChr => (),
             code::Instruction::ReadAndPush(x) => self.stack.push(x),
+        }
+    }
+}
+
+pub struct VmState {
+    pub space: Space<usize>,
+    pub stack: Stack<usize>,
+    pub location: Location,
+    pub delta: Direction,
+}
+
+impl Vm {
+    pub fn get_state(&self) -> VmState {
+        VmState {
+            space: self.get_space(),
+            stack: self.get_stack(),
+            location: self.get_location(),
+            delta: self.delta.clone(),
         }
     }
 }
